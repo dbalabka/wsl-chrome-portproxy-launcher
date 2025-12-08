@@ -31,8 +31,12 @@ chrome_running() {
   run_powershell "if (Get-Process -Name chrome -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
 }
 
-port_listening() {
-  run_powershell "if (Get-NetTCPConnection -LocalPort ${PORT} -ErrorAction SilentlyContinue | Where-Object { \$_.State -eq 'Listen' }) { exit 0 } else { exit 1 }"
+port_listening_by_chrome() {
+  run_powershell "if (Get-NetTCPConnection -LocalPort ${PORT} -ErrorAction SilentlyContinue | Where-Object { \$p = Get-Process -Id \$_.OwningProcess -ErrorAction SilentlyContinue; \$p -and \$p.Name -eq 'chrome' }) { exit 0 } else { exit 1 }"
+}
+
+port_listening_info() {
+  run_powershell "\$conns = Get-NetTCPConnection -LocalPort ${PORT} -ErrorAction SilentlyContinue | Select-Object -Property LocalAddress,LocalPort,RemoteAddress,RemotePort,State,OwningProcess; foreach (\$c in \$conns) { \$p = Get-Process -Id \$c.OwningProcess -ErrorAction SilentlyContinue; \$name = if (\$p) { \$p.Name } else { 'unknown' }; Write-Output (\"{0}:{1} owner={2} pid={3} state={4}\" -f \$c.LocalAddress, \$c.LocalPort, \$name, \$c.OwningProcess, \$c.State) }"
 }
 
 get_wsl_host_ip() {
@@ -103,13 +107,18 @@ start_chrome() {
   local chrome_cmd
   chrome_cmd="& \"${WINDOWS_CHROME_PATH}\" --remote-debugging-port=${PORT} --no-first-run --no-default-browser-check --user-data-dir=\"\$env:TEMP\\chrome-profile-stable\""
 
-  if port_listening; then
-    echo "Port ${PORT} already listening on Windows; assuming Chrome is ready. Skipping launch."
+  if port_listening_by_chrome; then
+    echo "Port ${PORT} already listening on Windows (owned by chrome); assuming ready. Skipping launch."
     return 0
   fi
 
   if chrome_running; then
     echo "Chrome is running, but port ${PORT} is not listening. You may need to start Chrome with --remote-debugging-port=${PORT}."
+  fi
+
+  if run_powershell "if (Get-NetTCPConnection -LocalPort ${PORT} -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"; then
+    echo "Port ${PORT} is in use by another process; attempting to launch Chrome anyway..."
+    port_listening_info
   fi
 
   run_powershell "$chrome_cmd"
