@@ -29,6 +29,10 @@ npx @dbalabka/chrome-wsl
 ```sh
  npx @dbalabka/chrome-wsl --stop
 ```
+- To uninstall (prompts before removing the firewall rule and socat):
+```sh
+ npx @dbalabka/chrome-wsl --uninstall
+```
 - Runs directly via npm without cloning; default entrypoint is `chrome-wsl` (matching the package name).
 
 #### Example
@@ -57,6 +61,7 @@ Then run:
   ```sh
   chrome-wsl
   chrome-wsl --stop
+  chrome-wsl --uninstall
   ```
 
 ## Notes

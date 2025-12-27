@@ -9,7 +9,7 @@ else
 fi
 
 PORT=9222
-WINDOWS_CHROME_PATH='C:\Program Files\Google\Chrome\Application\chrome.exe'
+WINDOWS_CHROME_PATH='C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
 FIREWALL_RULE_NAME='Chrome Remote Debug'
 PID_FILE="/tmp/start-chrome-wsl.pids"
 OK_MARK="✅"
@@ -64,8 +64,37 @@ stop_socat() {
 }
 
 run_powershell() {
-  # Runs a PowerShell command from WSL.
-  powershell.exe -NoLogo -NoProfile -NonInteractive -Command "$@"
+  # Runs a PowerShell command from WSL. If RUN_AS_ADMIN=1, invoke via Start-Process -Verb RunAs
+  # and capture output through a temp script/output file to mirror direct execution.
+  local ps_cmd="$*"
+
+  if [[ "${RUN_AS_ADMIN:-}" == "1" ]]; then
+    local out_file ps_file win_out win_ps
+    mkdir -p /mnt/c/Temp
+    out_file=$(mktemp -p /mnt/c/Temp chrome-wsl-out-XXXXXX)
+    ps_file=$(mktemp -p /mnt/c/Temp --suffix=.ps1 chrome-wsl-XXXXXX)
+    win_out=$(wslpath -w "$out_file")
+    win_ps=$(wslpath -w "$ps_file")
+
+    {
+      echo "& {"
+      echo "  ${ps_cmd}"
+      echo "} | Out-File -FilePath \"${win_out}\" -Encoding UTF8"
+    } >"$ps_file"
+
+    powershell.exe -NoLogo -NoProfile -NonInteractive -Command "Start-Process -FilePath 'powershell' -Verb RunAs -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-File','\"${win_ps}\"' -WindowStyle Hidden -Wait"
+    cat "$out_file"
+    rm -f "$out_file" "$ps_file"
+  else
+    powershell.exe -NoLogo -NoProfile -NonInteractive -Command "$ps_cmd"
+  fi
+}
+
+confirm() {
+  local prompt=$1
+  local reply
+  read -r -p "${prompt} [y/N] " reply
+  [[ "${reply}" =~ ^[Yy]$ ]]
 }
 
 chrome_running() {
@@ -77,7 +106,7 @@ port_listening_by_chrome() {
   local delay=1
   local i
   for ((i=1; i<=attempts; i++)); do
-    if run_powershell "if (Get-NetTCPConnection -LocalPort ${PORT} -ErrorAction SilentlyContinue | Where-Object { \$p = Get-Process -Id \$_.OwningProcess -ErrorAction SilentlyContinue; \$p -and \$p.Name -eq 'chrome' }) { exit 0 } else { exit 1 }"; then
+    if run_powershell "if (Get-NetTCPConnection -LocalPort ${PORT} -ErrorAction SilentlyContinue | Where-Object { \\p = Get-Process -Id \\_.OwningProcess -ErrorAction SilentlyContinue; \\p -and \\p.Name -eq 'chrome' }) { exit 0 } else { exit 1 }"; then
       return 0
     fi
     sleep "$delay"
@@ -87,6 +116,10 @@ port_listening_by_chrome() {
 
 port_listening_info() {
   run_powershell "\$conns = Get-NetTCPConnection -LocalPort ${PORT} -ErrorAction SilentlyContinue | Select-Object -Property LocalAddress,LocalPort,RemoteAddress,RemotePort,State,OwningProcess; foreach (\$c in \$conns) { \$p = Get-Process -Id \$c.OwningProcess -ErrorAction SilentlyContinue; \$name = if (\$p) { \$p.Name } else { 'unknown' }; Write-Output (\"{0}:{1} owner={2} pid={3} state={4}\" -f \$c.LocalAddress, \$c.LocalPort, \$name, \$c.OwningProcess, \$c.State) }"
+}
+
+port_in_use_by_non_chrome() {
+  run_powershell "if (Get-NetTCPConnection -LocalPort ${PORT} -ErrorAction SilentlyContinue | Where-Object { \$p = Get-Process -Id \_.OwningProcess -ErrorAction SilentlyContinue; -not (\$p -and \$p.Name -eq 'chrome') }) { exit 0 } else { exit 1 }"
 }
 
 get_wsl_host_ip() {
@@ -118,17 +151,66 @@ EOF
 }
 
 check_firewall_rule() {
-  if run_powershell "\$rule='${FIREWALL_RULE_NAME}'; if (Get-NetFirewallRule -DisplayName \$rule -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"; then
+  local rule_check_cmd="\$rule='${FIREWALL_RULE_NAME}'; if (Get-NetFirewallRule -DisplayName \$rule -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
+
+  if run_powershell "${rule_check_cmd}"; then
     ok "Firewall rule \"${FIREWALL_RULE_NAME}\" exists."
     return 0
   fi
 
+  err "Firewall rule \"${FIREWALL_RULE_NAME}\" is missing; attempting to create it (may prompt for admin)."
+  if RUN_AS_ADMIN=1 run_powershell "New-NetFirewallRule -DisplayName \"${FIREWALL_RULE_NAME}\" -Direction Inbound -LocalPort ${PORT} -Protocol TCP -Action Allow" \
+     && run_powershell "${rule_check_cmd}"; then
+    ok "Created firewall rule \"${FIREWALL_RULE_NAME}\"."
+    return 0
+  fi
+
   cat <<EOF
-${ERR_MARK} Firewall rule "${FIREWALL_RULE_NAME}" is missing.
+${ERR_MARK} Failed to create firewall rule "${FIREWALL_RULE_NAME}" automatically.
 Run this in an **admin PowerShell** window:
 New-NetFirewallRule -DisplayName "${FIREWALL_RULE_NAME}" -Direction Inbound -LocalPort ${PORT} -Protocol TCP -Action Allow
 EOF
   return 1
+}
+
+uninstall_firewall_rule() {
+  local rule_check_cmd="\$rule='${FIREWALL_RULE_NAME}'; if (Get-NetFirewallRule -DisplayName \$rule -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
+
+  if ! run_powershell "${rule_check_cmd}"; then
+    ok "Firewall rule \"${FIREWALL_RULE_NAME}\" is already absent."
+    return 0
+  fi
+
+  if ! confirm "Remove firewall rule \"${FIREWALL_RULE_NAME}\"?"; then
+    ok "Skipped firewall rule removal."
+    return 0
+  fi
+
+  if RUN_AS_ADMIN=1 run_powershell "Remove-NetFirewallRule -DisplayName \"${FIREWALL_RULE_NAME}\"" \
+     && ! run_powershell "${rule_check_cmd}"; then
+    ok "Removed firewall rule \"${FIREWALL_RULE_NAME}\"."
+  else
+    err "Failed to remove firewall rule \"${FIREWALL_RULE_NAME}\"."
+  fi
+}
+
+uninstall_socat() {
+  if ! command -v socat >/dev/null 2>&1; then
+    ok "socat is not installed; nothing to remove."
+    return 0
+  fi
+
+  if ! confirm "Remove socat package (sudo apt-get remove -y socat)?"; then
+    ok "Skipped socat removal."
+    return 0
+  fi
+
+  stop_socat
+  if sudo apt-get remove -y socat; then
+    ok "Removed socat package."
+  else
+    err "Failed to remove socat package."
+  fi
 }
 
 ensure_socat() {
@@ -172,7 +254,7 @@ stop_chrome() {
 
 start_chrome() {
   local chrome_cmd
-  chrome_cmd="\$args = @(\"--remote-debugging-port=${PORT}\", \"--no-first-run\", \"--no-default-browser-check\", \"--user-data-dir=\$env:TEMP\\chrome-profile-stable\"); \$p = Start-Process -FilePath \"${WINDOWS_CHROME_PATH}\" -ArgumentList \$args -PassThru; Write-Output \$p.Id"
+  chrome_cmd="\$args = @\(\"--remote-debugging-port=${PORT}\", \"--no-first-run\", \"--no-default-browser-check\", \"--user-data-dir=\$env:TEMP\\chrome-profile-stable\"\); \$p = Start-Process -FilePath \"${WINDOWS_CHROME_PATH}\" -ArgumentList \$args -PassThru; Write-Output \$p.Id"
 
   if [[ -n "$(get_pid "CHROME_PID")" ]]; then
     if port_listening_by_chrome; then
@@ -183,6 +265,11 @@ start_chrome() {
     if chrome_running; then
       err "Chrome is running (tracked pid $(get_pid "CHROME_PID")), but port ${PORT} is not listening. You may need to start Chrome with --remote-debugging-port=${PORT}."
     fi
+  fi
+
+  if port_in_use_by_non_chrome; then
+    err "Port ${PORT} is already in use by another process (not Chrome); details:"
+    port_listening_info
   fi
 
   local chrome_pid
@@ -203,6 +290,12 @@ start_chrome() {
 }
 
 main() {
+  if [[ "${1-}" == "--uninstall" ]]; then
+    uninstall_firewall_rule
+    uninstall_socat
+    exit 0
+  fi
+
   if [[ "${1-}" == "--stop" ]]; then
     stop_chrome
     stop_socat
