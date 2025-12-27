@@ -1,6 +1,6 @@
 {
   "name": "@dbalabka/chrome-wsl",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "WSL helper to start Windows Chrome with remote debugging and socat port forwarding.",
   "bin": "./chrome-wsl",
   "files": [
@@ -24,5 +24,8 @@
   "bugs": {
     "url": "https://github.com/dbalabka/wsl-chrome-portproxy-launcher/issues"
   },
-  "homepage": "https://github.com/dbalabka/wsl-chrome-portproxy-launcher#readme"
+  "homepage": "https://github.com/dbalabka/wsl-chrome-portproxy-launcher#readme",
+  "publishConfig": {
+    "access": "public"
+  }
 }

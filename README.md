@@ -17,7 +17,9 @@ A small WSL helper to open Google Chrome on Windows with remote debugging (port 
 - Windows Chrome installed at `C:\Program Files\Google\Chrome\Application\chrome.exe` (adjust the path in the script if different).
 - Network/apt access to install `socat` on first run (or preinstall manually).
 
-## Usage (npx)
+## Usage
+
+### with NPX
 ```sh
 npx @dbalabka/chrome-wsl
 ```
@@ -28,7 +30,17 @@ npx @dbalabka/chrome-wsl
  npx @dbalabka/chrome-wsl -- --stop
 ```
 - Runs directly via npm without cloning; default entrypoint is `chrome-wsl` (matching the package name).
-- To install globally instead of npx: `npm install -g @dbalabka/chrome-wsl` then run `chrome-wsl` or `chrome-wsl --stop`.
+
+### with NPM
+To install globally instead of npx:
+  ```sh
+  npm install -g @dbalabka/chrome-wsl
+  ```
+Then run:
+  ```sh
+  chrome-wsl
+  chrome-wsl --stop
+  ```
 
 ## Notes
 - Portproxy check expects forwarding from the detected Windows host IP to `127.0.0.1:9222`.
