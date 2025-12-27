@@ -1,8 +1,8 @@
 {
   "name": "@dbalabka/chrome-wsl",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "WSL helper to start Windows Chrome with remote debugging and socat port forwarding.",
-  "bin": "chrome-wsl",
+  "bin": "./chrome-wsl",
   "files": [
     "chrome-wsl",
     "README.md",
