@@ -1,0 +1,29 @@
+{
+  "name": "@dbalabka/chrome-wsl",
+  "version": "0.1.0",
+  "description": "WSL helper to start Windows Chrome with remote debugging and socat port forwarding.",
+  "bin": {
+    "start-chrome-wsl": "start_chrome_wsl.sh"
+  },
+  "files": [
+    "start_chrome_wsl.sh",
+    "README.md"
+  ],
+  "keywords": [
+    "wsl",
+    "chrome",
+    "socat",
+    "remote-debugging",
+    "mcp"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dbalabka/wsl-chrome-portproxy-launcher.git"
+  },
+  "author": "Dmitry Balabka",
+  "bugs": {
+    "url": "https://github.com/dbalabka/wsl-chrome-portproxy-launcher/issues"
+  },
+  "homepage": "https://github.com/dbalabka/wsl-chrome-portproxy-launcher#readme"
+}

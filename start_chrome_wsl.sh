@@ -11,14 +11,55 @@ fi
 PORT=9222
 WINDOWS_CHROME_PATH='C:\Program Files\Google\Chrome\Application\chrome.exe'
 FIREWALL_RULE_NAME='Chrome Remote Debug'
+PID_FILE="/tmp/start-chrome-wsl.pids"
+OK_MARK="✅"
+ERR_MARK="❌"
+
+ok() {
+  echo "${OK_MARK} $*"
+}
+
+err() {
+  echo "${ERR_MARK} $*" >&2
+}
+
+set_pid() {
+  # Stores or updates a PID value in the temp PID file.
+  local key=$1
+  local value=$2
+  [[ -z "${value:-}" ]] && return
+  touch "$PID_FILE"
+  if grep -q "^${key}=" "$PID_FILE" 2>/dev/null; then
+    sed -i.bak "s/^${key}=.*/${key}=${value}/" "$PID_FILE" && rm -f "${PID_FILE}.bak"
+  else
+    echo "${key}=${value}" >>"$PID_FILE"
+  fi
+}
+
+get_pid() {
+  local key=$1
+  [[ -f "$PID_FILE" ]] || return 0
+  sed -n "s/^${key}=//p" "$PID_FILE" | head -n1
+}
+
+clear_pid() {
+  local key=$1
+  [[ -f "$PID_FILE" ]] || return 0
+  sed -i.bak "/^${key}=/d" "$PID_FILE"
+  rm -f "${PID_FILE}.bak"
+  if [[ ! -s "$PID_FILE" ]]; then
+    rm -f "$PID_FILE"
+  fi
+}
 
 stop_socat() {
   local pattern="socat TCP-LISTEN:${PORT},fork,reuseaddr"
   if pgrep -f "$pattern" >/dev/null 2>&1; then
     pkill -f "$pattern" || true
-    echo "Stopped socat forwarding for port ${PORT}."
+    ok "Stopped socat forwarding for port ${PORT}."
+    clear_pid "SOCAT_PID"
   else
-    echo "No socat forwarding for port ${PORT} is running."
+    ok "No socat forwarding for port ${PORT} is running."
   fi
 }
 
@@ -32,7 +73,16 @@ chrome_running() {
 }
 
 port_listening_by_chrome() {
-  run_powershell "if (Get-NetTCPConnection -LocalPort ${PORT} -ErrorAction SilentlyContinue | Where-Object { \$p = Get-Process -Id \$_.OwningProcess -ErrorAction SilentlyContinue; \$p -and \$p.Name -eq 'chrome' }) { exit 0 } else { exit 1 }"
+  local attempts=5
+  local delay=1
+  local i
+  for ((i=1; i<=attempts; i++)); do
+    if run_powershell "if (Get-NetTCPConnection -LocalPort ${PORT} -ErrorAction SilentlyContinue | Where-Object { \$p = Get-Process -Id \$_.OwningProcess -ErrorAction SilentlyContinue; \$p -and \$p.Name -eq 'chrome' }) { exit 0 } else { exit 1 }"; then
+      return 0
+    fi
+    sleep "$delay"
+  done
+  return 1
 }
 
 port_listening_info() {
@@ -43,7 +93,7 @@ get_wsl_host_ip() {
   local host_ip
   host_ip=$(ip route | awk '/^default via / {print $3; exit}')
   if [[ -z "${host_ip:-}" ]]; then
-    echo "Could not determine Windows host IP from default route." >&2
+    err "Could not determine Windows host IP from default route."
     return 1
   fi
   printf '%s' "$host_ip"
@@ -55,12 +105,12 @@ check_portproxy() {
   output=$(run_powershell "netsh interface portproxy show all" | tr -d '\r')
   regex="${host_ip//./\\.}[[:space:]]+${PORT}[[:space:]]+127\\.0\\.0\\.1[[:space:]]+${PORT}"
   if echo "$output" | grep -Eq "$regex"; then
-    echo "Portproxy ${host_ip}:${PORT} -> 127.0.0.1:${PORT} is configured."
+    ok "Portproxy ${host_ip}:${PORT} -> 127.0.0.1:${PORT} is configured."
     return 0
   fi
 
   cat <<EOF
-Portproxy on ${host_ip}:${PORT} is missing.
+${ERR_MARK} Portproxy on ${host_ip}:${PORT} is missing.
 Run this in an **admin PowerShell** window:
 netsh interface portproxy add v4tov4 listenaddress=${host_ip} listenport=${PORT} connectaddress=127.0.0.1 connectport=${PORT}
 EOF
@@ -69,12 +119,12 @@ EOF
 
 check_firewall_rule() {
   if run_powershell "\$rule='${FIREWALL_RULE_NAME}'; if (Get-NetFirewallRule -DisplayName \$rule -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"; then
-    echo "Firewall rule \"${FIREWALL_RULE_NAME}\" exists."
+    ok "Firewall rule \"${FIREWALL_RULE_NAME}\" exists."
     return 0
   fi
 
   cat <<EOF
-Firewall rule "${FIREWALL_RULE_NAME}" is missing.
+${ERR_MARK} Firewall rule "${FIREWALL_RULE_NAME}" is missing.
 Run this in an **admin PowerShell** window:
 New-NetFirewallRule -DisplayName "${FIREWALL_RULE_NAME}" -Direction Inbound -LocalPort ${PORT} -Protocol TCP -Action Allow
 EOF
@@ -83,11 +133,11 @@ EOF
 
 ensure_socat() {
   if command -v socat >/dev/null 2>&1; then
-    echo "socat is already installed."
+    ok "socat is already installed."
     return 0
   fi
 
-  echo "socat not found. Installing via apt..."
+  err "socat not found. Installing via apt..."
   sudo apt-get update
   sudo apt-get install -y socat
 }
@@ -95,44 +145,73 @@ ensure_socat() {
 start_socat() {
   local host_ip=$1
   if pgrep -f "socat TCP-LISTEN:${PORT},fork,reuseaddr TCP:${host_ip}:${PORT}" >/dev/null 2>&1; then
-    echo "socat forwarding for port ${PORT} already running."
+    ok "socat forwarding for port ${PORT} already running."
     return 0
   fi
 
   nohup socat "TCP-LISTEN:${PORT},fork,reuseaddr" "TCP:${host_ip}:${PORT}" >/tmp/socat-9222.log 2>&1 &
-  echo "Started socat (logging to /tmp/socat-9222.log)."
+  set_pid "SOCAT_PID" "$!"
+  ok "Started socat (logging to /tmp/socat-9222.log)."
+}
+
+stop_chrome() {
+  local chrome_pid
+  chrome_pid=$(get_pid "CHROME_PID")
+  if [[ -z "${chrome_pid:-}" ]]; then
+    ok "No tracked Chrome PID found; skipping Chrome stop."
+    return 0
+  fi
+
+  if run_powershell "if (Get-Process -Id ${chrome_pid} -ErrorAction SilentlyContinue) { Stop-Process -Id ${chrome_pid} -Force; exit 0 } else { exit 1 }"; then
+    ok "Stopped tracked Chrome process (pid ${chrome_pid})."
+  else
+    ok "Tracked Chrome PID ${chrome_pid} is not running."
+  fi
+  clear_pid "CHROME_PID"
 }
 
 start_chrome() {
   local chrome_cmd
-  chrome_cmd="& \"${WINDOWS_CHROME_PATH}\" --remote-debugging-port=${PORT} --no-first-run --no-default-browser-check --user-data-dir=\"\$env:TEMP\\chrome-profile-stable\""
+  chrome_cmd="\$args = @(\"--remote-debugging-port=${PORT}\", \"--no-first-run\", \"--no-default-browser-check\", \"--user-data-dir=\$env:TEMP\\chrome-profile-stable\"); \$p = Start-Process -FilePath \"${WINDOWS_CHROME_PATH}\" -ArgumentList \$args -PassThru; Write-Output \$p.Id"
+
+  if [[ -n "$(get_pid "CHROME_PID")" ]]; then
+    if port_listening_by_chrome; then
+      ok "Port ${PORT} already listening on Windows (owned by chrome); assuming ready. Skipping launch (tracked pid $(get_pid "CHROME_PID"))."
+      return 0
+    fi
+
+    if chrome_running; then
+      err "Chrome is running (tracked pid $(get_pid "CHROME_PID")), but port ${PORT} is not listening. You may need to start Chrome with --remote-debugging-port=${PORT}."
+    fi
+  fi
+
+  local chrome_pid
+  chrome_pid=$(run_powershell "$chrome_cmd" | tr -d '\r' | head -n 1)
+  if [[ -n "${chrome_pid:-}" ]]; then
+    set_pid "CHROME_PID" "$chrome_pid"
+    ok "Launched Chrome (pid ${chrome_pid}) with remote debugging."
+  else
+    err "Launched Chrome but could not determine PID."
+  fi
 
   if port_listening_by_chrome; then
-    echo "Port ${PORT} already listening on Windows (owned by chrome); assuming ready. Skipping launch."
-    return 0
-  fi
-
-  if chrome_running; then
-    echo "Chrome is running, but port ${PORT} is not listening. You may need to start Chrome with --remote-debugging-port=${PORT}."
-  fi
-
-  if run_powershell "if (Get-NetTCPConnection -LocalPort ${PORT} -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"; then
-    echo "Port ${PORT} is in use by another process; attempting to launch Chrome anyway..."
+    ok "Chrome is listening on port ${PORT}."
+  else
+    err "Chrome launch did not open port ${PORT}; verify remote-debugging flag or check for conflicts."
     port_listening_info
   fi
-
-  run_powershell "$chrome_cmd"
 }
 
 main() {
   if [[ "${1-}" == "--stop" ]]; then
+    stop_chrome
     stop_socat
     exit 0
   fi
 
   local host_ip
   host_ip=$(get_wsl_host_ip)
-  echo "Detected Windows host IP: ${host_ip}"
+  ok "Detected Windows host IP: ${host_ip}"
 
   check_portproxy "$host_ip" || exit 1
   check_firewall_rule || exit 1

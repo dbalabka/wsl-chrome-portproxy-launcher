@@ -28,7 +28,35 @@ A small WSL helper to open Google Chrome on Windows with remote debugging (port 
 ./start_chrome_wsl.sh --stop
 ```
 
+## Installation (one-liner)
+```sh
+sudo install -m 755 start_chrome_wsl.sh /usr/local/bin/start-chrome-wsl
+```
+- Uses the local script (no curl/wget download needed). If you cloned the repo elsewhere, run from that path.
+- Adjust `WINDOWS_CHROME_PATH` or `PORT` inside the script if needed.
+- If `apt` is blocked, preinstall `socat` via your allowed package source.
+
+## Installation via npx
+```sh
+npx start-chrome-wsl
+```
+- Runs directly via npm without cloning; exposes the `start-chrome-wsl` binary.
+- Use `npm install -g start-chrome-wsl` to keep it available without npx.
+
+## Installation via pipx
+```sh
+pipx install start-chrome-wsl
+```
+- Installs the wrapper that invokes the same `start_chrome_wsl.sh` script.
+- Alternatively, run without installing globally:
+```sh
+pipx run start-chrome-wsl --stop
+```
+
 ## Notes
 - Portproxy check expects forwarding from the detected Windows host IP to `127.0.0.1:9222`.
 - Chrome launch is skipped when port 9222 already listens on Windows (assumed active remote-debug session).
 - For a different remote debugging port or Chrome path, edit `PORT` or `WINDOWS_CHROME_PATH` in `start_chrome_wsl.sh`.
+
+## License
+MIT License. See `LICENSE` for details.
