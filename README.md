@@ -1,22 +1,29 @@
 # Chrome Start From WSL Helper for MCP
 
-A small WSL helper to open Google Chrome on Windows with remote debugging (port 9222) while bridging traffic from WSL via `socat`. It checks/prints the required Windows portproxy and firewall setup, ensures `socat` is installed, starts the tunnel, and launches Chrome with a temporary profile.
+A lightweight shell script that **automates Chrome DevTools MCP setup** from **WSL** by launching **Windows Chrome** with remote debugging enabled and transparently proxying traffic from WSL using `socat`.
 
-## Features
-- Detects Windows host IP automatically from WSL.
-- Verifies Windows portproxy forwarding (9222) and shows admin PowerShell commands if missing.
-- Verifies the Windows firewall rule for port 9222 and shows the admin command if missing.
-- Ensures `socat` is installed on WSL, installs via `apt` when needed.
-- Starts a background `socat` bridge WSL→Windows (logs to `/tmp/socat-9222.log`).
-- Launches Windows Chrome with `--remote-debugging-port=9222` and a temp profile.
-- Skips launching if port 9222 is already listening on Windows; warns if Chrome is running without the debug port.
-- Works under bash or zsh; includes `--stop` to kill the `socat` forwarder.
+No Linux Chrome, no gWSL, no manual Windows networking setup.
+
+## What It Does
+
+* 🤖 Automatically bridges **WSL → Windows Chrome DevTools (9222)** using `socat`
+* ✅ Validates required **Windows portproxy and firewall rules**
+* 🚀 Launches **existing Windows Chrome** with remote debugging and a temporary profile
+* 🧹 Cleans up easily with a stop command and leaves no permanent system changes
+
+## Key Features
+
+* **Fully automated**: one command to get Chrome DevTools MCP working from WSL
+* **Lightweight**: simple, readable shell script
+* **Uses your existing Windows Chrome** — no Linux Chrome or gWSL required
+* **Clean & reversible**: minimal system changes, easy to uninstall
 
 ## Prerequisites
-- WSL with `powershell.exe` available.
-- Windows Chrome installed at `C:\Program Files\Google\Chrome\Application\chrome.exe` (adjust the path in the script if different).
-- Network/apt access to install `socat` on first run (or preinstall manually).
-- Run the script from inside WSL; non-WSL Linux is not supported (Docker has limited proxy-only support, see below).
+
+* Windows Chrome already installed
+* WSL environment
+* The script will install one small dependency (`socat`) automatically for port proxying
+
 
 ## Usage
 
@@ -35,6 +42,8 @@ npx @dbalabka/chrome-wsl
  npx @dbalabka/chrome-wsl --uninstall
 ```
 - Runs directly via npm without cloning; default entrypoint is `chrome-wsl` (matching the package name).
+
+> ℹ️️ Note: Must be run from WSL. Docker is supported only for proxying (no Chrome launch).
 
 #### Example
 ```sh
