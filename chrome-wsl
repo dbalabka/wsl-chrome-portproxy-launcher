@@ -280,7 +280,7 @@ ensure_socat() {
     return 0
   fi
 
-  err "socat not found. Installing via apt..."
+  warn "socat not found. Installing via apt..."
   sudo apt-get update
   sudo apt-get install -y socat
 }
