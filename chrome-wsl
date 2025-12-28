@@ -292,6 +292,15 @@ start_socat() {
   ok "Started socat (logging to /tmp/socat-9222.log)."
 }
 
+is_docker() {
+  [[ -f /.dockerenv ]] && return 0
+  grep -qaE 'docker|containerd|kubepods' /proc/1/cgroup 2>/dev/null
+}
+
+get_docker_host_ip() {
+  getent hosts host.docker.internal 2>/dev/null | awk '{print $1; exit}'
+}
+
 stop_chrome() {
   local chrome_pid
   chrome_pid=$(get_pid "CHROME_PID")
@@ -353,7 +362,25 @@ main() {
     echo "chrome-wsl ${PACKAGE_VERSION:-unknown}"
     exit 0
   fi
+
+  if is_docker; then
+    HOST_IP=$(get_docker_host_ip)
+    if [[ -z "${HOST_IP:-}" ]]; then
+      err "Could not resolve host.docker.internal inside Docker."
+      exit 1
+    fi
+    if [[ "${1-}" == "--uninstall" ]]; then
+      uninstall_portproxy "$HOST_IP"
+      ok "Docker proxy uninstall complete."
+      exit 0
+    fi
+    ok "Docker environment detected; using host ${HOST_IP} and starting socat only."
+    start_socat "$HOST_IP"
+    exit 0
+  fi
+
   ensure_wsl
+
   if [[ "${1-}" == "--uninstall" ]]; then
     uninstall_portproxy
     uninstall_firewall_rule
