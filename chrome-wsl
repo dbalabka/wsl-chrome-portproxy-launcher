@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Compatible with bash and zsh.
-PACKAGE_VERSION="0.3.2"
+PACKAGE_VERSION="0.4.0"
 set -e
 set -u
 if command -v setopt >/dev/null 2>&1; then
@@ -20,15 +20,18 @@ WARN_MARK="❗"
 ERR_MARK="❌"
 
 ok() {
-  echo "${OK_MARK} $*"
+  local prefix="${CONTAINER_LABEL:+[${CONTAINER_LABEL}] }"
+  echo "${OK_MARK} ${prefix}$*"
 }
 
 err() {
-  echo "${ERR_MARK} $*" >&2
+  local prefix="${CONTAINER_LABEL:+[${CONTAINER_LABEL}] }"
+  echo "${ERR_MARK} ${prefix}$*" >&2
 }
 
 warn() {
-  echo "${WARN_MARK} $*" >&2
+  local prefix="${CONTAINER_LABEL:+[${CONTAINER_LABEL}] }"
+  echo "${WARN_MARK} ${prefix}$*" >&2
 }
 
 set_pid() {
@@ -98,10 +101,12 @@ run_powershell() {
   fi
 }
 
+CONFIRM_MARK="❔"
 confirm() {
   local prompt=$1
   local reply
-  read -r -p "${prompt} [y/N] " reply
+  local prefix="${CONTAINER_LABEL:+[${CONTAINER_LABEL}] }"
+  read -r -p "${CONFIRM_MARK} ${prefix}${prompt} [y/N] " reply
   [[ "${reply}" =~ ^[Yy]$ ]]
 }
 
@@ -297,8 +302,33 @@ is_docker() {
   grep -qaE 'docker|containerd|kubepods' /proc/1/cgroup 2>/dev/null
 }
 
+container_exec() {
+  local container=$1; shift
+  local script_path
+  script_path=$(readlink -f "$0")
+  ensure_docker
+  local tty_flag="-i"
+  if [ -t 0 ]; then
+    tty_flag="-it"
+  fi
+  if ! cat "$script_path" | docker exec -i "${container}" sh -c "cat > /tmp/chrome-wsl.sh"; then
+    err "Failed to copy script into container ${container}."
+    exit 1
+  fi
+  local inner_cmd="CONTAINER_LABEL=${container} chmod +x /tmp/chrome-wsl.sh && CONTAINER_LABEL=${container} /tmp/chrome-wsl.sh $*"
+  docker exec ${tty_flag} "${container}" sh -lc "${inner_cmd}"
+}
+
 get_docker_host_ip() {
   getent hosts host.docker.internal 2>/dev/null | awk '{print $1; exit}'
+}
+
+ensure_docker() {
+  if command -v docker >/dev/null 2>&1; then
+    return 0
+  fi
+  err "Docker CLI is required for --container."
+  exit 1
 }
 
 stop_chrome() {
@@ -358,39 +388,65 @@ ensure_wsl() {
 }
 
 main() {
+  local container="" uninstall_flag=0 stop_flag=0
+  for arg in "$@"; do
+    case "$arg" in
+      --container=*) container=${arg#*=} ;;
+      --uninstall) uninstall_flag=1 ;;
+      --stop) stop_flag=1 ;;
+    esac
+  done
+
   if [[ "${1-}" == "--version" || "${1-}" == "-V" ]]; then
     echo "chrome-wsl ${PACKAGE_VERSION:-unknown}"
     exit 0
   fi
 
+  if is_docker && [[ -n "$container" ]]; then
+    err "--container is only supported when running in WSL, not inside Docker."
+    exit 1
+  fi
+
   if is_docker; then
+    if [[ $uninstall_flag -eq 1 ]]; then
+      uninstall_socat
+      exit 0
+    fi
+
+    if [[ $stop_flag -eq 1 ]]; then
+      stop_socat
+      exit 0
+    fi
+
     HOST_IP=$(get_docker_host_ip)
     if [[ -z "${HOST_IP:-}" ]]; then
       err "Could not resolve host.docker.internal inside Docker."
       exit 1
     fi
-    if [[ "${1-}" == "--uninstall" ]]; then
-      uninstall_portproxy "$HOST_IP"
-      ok "Docker proxy uninstall complete."
-      exit 0
-    fi
-    ok "Docker environment detected; using host ${HOST_IP} and starting socat only."
+
+    ensure_socat
     start_socat "$HOST_IP"
     exit 0
   fi
 
   ensure_wsl
 
-  if [[ "${1-}" == "--uninstall" ]]; then
+  if [[ $uninstall_flag -eq 1 ]]; then
     uninstall_portproxy
     uninstall_firewall_rule
     uninstall_socat
+    if [[ -n "$container" ]]; then
+      container_exec "$container" --uninstall
+    fi
     exit 0
   fi
 
-  if [[ "${1-}" == "--stop" ]]; then
+  if [[ $stop_flag -eq 1 ]]; then
     stop_chrome
     stop_socat
+    if [[ -n "$container" ]]; then
+      container_exec "$container" --stop
+    fi
     exit 0
   fi
 
@@ -403,6 +459,10 @@ main() {
   ensure_socat
   start_socat "$host_ip"
   start_chrome
+
+  if [[ -n "$container" ]]; then
+    container_exec "$container"
+  fi
 }
 
 main "$@"

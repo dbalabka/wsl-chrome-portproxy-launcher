@@ -65,10 +65,14 @@ Then run:
   chrome-wsl --uninstall
   ```
 
-## Notes
-- Portproxy check expects forwarding from the detected Windows host IP to `127.0.0.1:9222`.
-- Chrome launch is skipped when port 9222 already listens on Windows (assumed active remote-debug session).
-- For a different remote debugging port or Chrome path, edit `PORT` or `WINDOWS_CHROME_PATH` in `start_chrome_wsl.sh`.
+## Docker
+
+`chrome-wsl` can also take care of starting a proxy inside the Docker container and allow to access the MCP server from localhost. It helps to use the same Chrome DevTools MCP configuration for agents running inside the docker container as well as outside.
+```shell
+npx @dbalabka/chrome-wsl --container=<name>
+npx @dbalabka/chrome-wsl --stop --container=<name>
+npx @dbalabka/chrome-wsl --uninstall --container=<name>
+```
 
 ## Chrome DevTools MCP configuration for agents
 
@@ -84,13 +88,13 @@ args = ["-y", "chrome-devtools-mcp@latest", "--browser-url=http://127.0.0.1:9222
 startup_timeout_sec = 20.0
 ```
 
-## License
-MIT License. See `LICENSE` for details.
-
-### Docker
-- Targets `host.docker.internal:9222`.
-- Supported inside Docker: start tunnel (`npx @dbalabka/chrome-wsl`) and uninstall proxy (`npx @dbalabka/chrome-wsl --uninstall`).
-- Other flags (e.g., firewall/portproxy checks for Windows) are skipped; full start must happen from WSL.
+To run Codex inside the container and use the same MCP configuration and authorisation token, mount the Codex configuration folder inside the docker container using the following docker composer settings:
+```shell
+services:
+    app:
+        volumes:
+            - ~/.codex:/home/vscode/.codex
+```
 
 ## License
 MIT License. See `LICENSE` for details.
