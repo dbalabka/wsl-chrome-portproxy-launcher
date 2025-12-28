@@ -16,6 +16,7 @@ A small WSL helper to open Google Chrome on Windows with remote debugging (port 
 - WSL with `powershell.exe` available.
 - Windows Chrome installed at `C:\Program Files\Google\Chrome\Application\chrome.exe` (adjust the path in the script if different).
 - Network/apt access to install `socat` on first run (or preinstall manually).
+- Run the script from inside WSL; non-WSL Linux is not supported (Docker has limited proxy-only support, see below).
 
 ## Usage
 
@@ -82,6 +83,14 @@ command = "npx"
 args = ["-y", "chrome-devtools-mcp@latest", "--browser-url=http://127.0.0.1:9222"]
 startup_timeout_sec = 20.0
 ```
+
+## License
+MIT License. See `LICENSE` for details.
+
+### Docker
+- Targets `host.docker.internal:9222`.
+- Supported inside Docker: start tunnel (`npx @dbalabka/chrome-wsl`) and uninstall proxy (`npx @dbalabka/chrome-wsl --uninstall`).
+- Other flags (e.g., firewall/portproxy checks for Windows) are skipped; full start must happen from WSL.
 
 ## License
 MIT License. See `LICENSE` for details.
