@@ -12,6 +12,8 @@ PORT=9222
 WINDOWS_CHROME_PATH='C:\Program Files\Google\Chrome\Application\chrome.exe'
 FIREWALL_RULE_NAME='Chrome Remote Debug'
 PID_FILE="/tmp/start-chrome-wsl.pids"
+HOST_IP=""
+BROWSER_VERSION=""
 OK_MARK="✅"
 WARN_MARK="❗"
 ERR_MARK="❌"
@@ -102,6 +104,12 @@ confirm() {
   [[ "${reply}" =~ ^[Yy]$ ]]
 }
 
+version_suffix() {
+  if [[ -n "${BROWSER_VERSION:-}" ]]; then
+    printf " (Chrome %s)" "$BROWSER_VERSION"
+  fi
+}
+
 chrome_running() {
   run_powershell "if (Get-Process -Name chrome -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
 }
@@ -123,6 +131,14 @@ port_listening_info() {
   run_powershell "\$conns = Get-NetTCPConnection -LocalPort ${PORT} -ErrorAction SilentlyContinue | Select-Object -Property LocalAddress,LocalPort,RemoteAddress,RemotePort,State,OwningProcess; foreach (\$c in \$conns) { \$p = Get-Process -Id \$c.OwningProcess -ErrorAction SilentlyContinue; \$name = if (\$p) { \$p.Name } else { 'unknown' }; Write-Output (\"{0}:{1} owner={2} pid={3} state={4}\" -f \$c.LocalAddress, \$c.LocalPort, \$name, \$c.OwningProcess, \$c.State) }"
 }
 
+get_browser_version() {
+  local host_ip=${1:-$HOST_IP}
+  [[ -z "${host_ip:-}" ]] && return 0
+  curl -s "http://${host_ip}:${PORT}/json/version" \
+    | sed -n "s/.*\"Browser\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" \
+    | head -n 1
+}
+
 get_wsl_host_ip() {
   local host_ip
   host_ip=$(ip route | awk '/^default via / {print $3; exit}')
@@ -136,11 +152,22 @@ get_wsl_host_ip() {
 check_portproxy() {
   local host_ip=$1
   local output regex
-  output=$(run_powershell "netsh interface portproxy show all" | tr -d '\r')
-  regex="${host_ip//./\\.}[[:space:]]+${PORT}[[:space:]]+127\\.0\\.0\\.1[[:space:]]+${PORT}"
+  output=$(run_powershell "netsh interface portproxy show all" | tr -d '
+')
+  regex="${host_ip//./\.}[[:space:]]+${PORT}[[:space:]]+127\.0\.0\.1[[:space:]]+${PORT}"
   if echo "$output" | grep -Eq "$regex"; then
     ok "Portproxy ${host_ip}:${PORT} -> 127.0.0.1:${PORT} is configured."
     return 0
+  fi
+
+  warn "Portproxy on ${host_ip}:${PORT} is missing; attempting to create it (may prompt for admin)."
+  if RUN_AS_ADMIN=1 run_powershell "netsh interface portproxy add v4tov4 listenaddress=${host_ip} listenport=${PORT} connectaddress=127.0.0.1 connectport=${PORT}"; then
+    output=$(run_powershell "netsh interface portproxy show all" | tr -d '
+')
+    if echo "$output" | grep -Eq "$regex"; then
+      ok "Created portproxy ${host_ip}:${PORT} -> 127.0.0.1:${PORT}."
+      return 0
+    fi
   fi
 
   cat <<EOF
@@ -211,6 +238,33 @@ uninstall_socat() {
     ok "Removed socat package."
   else
     err "Failed to remove socat package."
+  fi
+}
+
+# Remove portproxy entry
+uninstall_portproxy() {
+  local host_ip=${1:-$HOST_IP}
+  if [[ -z "${host_ip:-}" ]]; then
+    host_ip=$(get_wsl_host_ip)
+  fi
+  local output regex
+  output=$(run_powershell "netsh interface portproxy show all" | tr -d '\r')
+  regex="${host_ip//./\\.}[[:space:]]+${PORT}[[:space:]]+127\\.0\\.0\\.1[[:space:]]+${PORT}"
+  if ! echo "$output" | grep -Eq "$regex"; then
+    ok "Portproxy ${host_ip}:${PORT} is already absent."
+    return 0
+  fi
+
+  if ! confirm "Remove portproxy ${host_ip}:${PORT} -> 127.0.0.1:${PORT}?"; then
+    ok "Skipped portproxy removal."
+    return 0
+  fi
+
+  if RUN_AS_ADMIN=1 run_powershell "netsh interface portproxy delete v4tov4 listenaddress=${host_ip} listenport=${PORT}" \
+     && ! (run_powershell "netsh interface portproxy show all" | tr -d '\r' | grep -Eq "$regex"); then
+    ok "Removed portproxy ${host_ip}:${PORT} -> 127.0.0.1:${PORT}."
+  else
+    err "Failed to remove portproxy ${host_ip}:${PORT}."
   fi
 }
 
@@ -287,6 +341,7 @@ start_chrome() {
 
 main() {
   if [[ "${1-}" == "--uninstall" ]]; then
+    uninstall_portproxy
     uninstall_firewall_rule
     uninstall_socat
     exit 0
@@ -298,8 +353,8 @@ main() {
     exit 0
   fi
 
-  local host_ip
-  host_ip=$(get_wsl_host_ip)
+  HOST_IP=$(get_wsl_host_ip)
+  local host_ip="$HOST_IP"
   ok "Detected Windows host IP: ${host_ip}"
 
   check_portproxy "$host_ip" || exit 1
