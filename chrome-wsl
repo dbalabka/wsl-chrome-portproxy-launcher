@@ -106,6 +106,27 @@ debug_socat_info() {
   fi
 }
 
+debug_linux_listeners() {
+  echo "Linux listeners on port ${PORT}:"
+  if command -v ss >/dev/null 2>&1; then
+    if ss -lntp 2>/dev/null | awk -v port=":${PORT}" '$0 ~ port {print "  " $0}' | head -n 50; then
+      return 0
+    fi
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    if lsof -nP -iTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null | awk 'NR==1 {print "  " $0; next} {print "  " $0}'; then
+      return 0
+    fi
+  fi
+  echo "  unavailable (no permissions or tools)"
+}
+
+debug_windows_listeners() {
+  echo "Windows listeners on port ${PORT}:"
+  run_powershell "netstat -ano | Select-String -Pattern \"LISTENING\" | Select-String -Pattern \":${PORT}\" | ForEach-Object { \"  \" + \$_.Line }"
+  run_powershell "if (-not (netstat -ano | Select-String -Pattern \"LISTENING\" | Select-String -Pattern \":${PORT}\")) { Write-Output '  none' }"
+}
+
 debug_windows_rules() {
   echo "Portproxy rules for port ${PORT}:"
   run_powershell "\$lines = netsh interface portproxy show all | Select-String -SimpleMatch '${PORT}' | ForEach-Object { \$_.Line }; if (\$lines) { \$lines } else { '  none' }"
@@ -186,6 +207,38 @@ get_browser_version() {
   curl -s "http://${host_ip}:${PORT}/json/version" \
     | sed -n "s/.*\"Browser\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" \
     | head -n 1
+}
+
+get_protocol_version() {
+  local host_ip=${1:-$HOST_IP}
+  [[ -z "${host_ip:-}" ]] && return 0
+  curl -s "http://${host_ip}:${PORT}/json/version" \
+    | sed -n "s/.*\"Protocol-Version\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" \
+    | head -n 1
+}
+
+check_devtools_access_wsl() {
+  local url_local="http://127.0.0.1:${PORT}/json/version"
+  local url_host="http://${HOST_IP}:${PORT}/json/version"
+  local json browser protocol
+
+  json=$(curl -s --max-time 2 "$url_local" || true)
+  if [[ -z "${json:-}" ]]; then
+    warn "Chrome DevTools not reachable at ${url_local} from WSL."
+    json=$(curl -s --max-time 2 "$url_host" || true)
+    if [[ -z "${json:-}" ]]; then
+      err "Chrome DevTools not reachable at ${url_host} from WSL."
+      return 1
+    fi
+  fi
+
+  browser=$(echo "$json" | sed -n "s/.*\"Browser\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" | head -n 1)
+  protocol=$(echo "$json" | sed -n "s/.*\"Protocol-Version\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" | head -n 1)
+  if [[ -n "${browser:-}" || -n "${protocol:-}" ]]; then
+    ok "DevTools reachable from WSL: ${browser:-unknown} (Protocol ${protocol:-unknown})."
+  else
+    warn "DevTools reachable from WSL, but version info was not parsed."
+  fi
 }
 
 get_wsl_host_ip() {
@@ -497,6 +550,8 @@ main() {
 
   if [[ $debug_flag -eq 1 ]]; then
     debug_windows_rules
+    debug_windows_listeners
+    debug_linux_listeners
     debug_socat_info
     if [[ -n "$container" ]]; then
       container_exec "$container" --debug
@@ -529,9 +584,10 @@ main() {
 
   check_portproxy "$host_ip" || exit 1
   check_firewall_rule || exit 1
+  start_chrome
   ensure_socat
   start_socat "$host_ip"
-  start_chrome
+  check_devtools_access_wsl || true
 
   if [[ -n "$container" ]]; then
     container_exec "$container"
