@@ -74,6 +74,45 @@ stop_socat() {
   fi
 }
 
+debug_socat_info() {
+  echo "socat status:"
+  if command -v socat >/dev/null 2>&1; then
+    echo "  version: $(socat -V 2>&1 | head -n 1)"
+  else
+    echo "  version: not installed"
+  fi
+
+  local pattern="socat TCP-LISTEN:${PORT},fork,reuseaddr"
+  if pgrep -af "$pattern" >/dev/null 2>&1; then
+    pgrep -af "$pattern" | while read -r line; do
+      echo "  process: ${line}"
+    done
+  else
+    echo "  process: not running"
+  fi
+
+  local socat_pid
+  socat_pid=$(get_pid "SOCAT_PID")
+  if [[ -n "${socat_pid:-}" ]]; then
+    echo "  tracked pid: ${socat_pid}"
+  else
+    echo "  tracked pid: none"
+  fi
+
+  if [[ -f /tmp/socat-9222.log ]]; then
+    echo "  log: /tmp/socat-9222.log"
+  else
+    echo "  log: not found"
+  fi
+}
+
+debug_windows_rules() {
+  echo "Portproxy rules for port ${PORT}:"
+  run_powershell "\$lines = netsh interface portproxy show all | Select-String -SimpleMatch '${PORT}' | ForEach-Object { \$_.Line }; if (\$lines) { \$lines } else { '  none' }"
+  echo "Firewall rules for port ${PORT}:"
+  run_powershell "\$port='${PORT}'; \$rules = Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { \$filter = Get-NetFirewallPortFilter -AssociatedNetFirewallRule \$_ -ErrorAction SilentlyContinue; \$filter -and (\$filter.LocalPort -contains \$port) }; if (\$rules) { \$rules | ForEach-Object { \"  {0} enabled={1} direction={2} action={3} profile={4}\" -f \$_.DisplayName, \$_.Enabled, \$_.Direction, \$_.Action, \$_.Profile } } else { '  none' }"
+}
+
 run_powershell() {
   # Runs a PowerShell command from WSL. If RUN_AS_ADMIN=1, invoke via Start-Process -Verb RunAs
   # and capture output through a temp script/output file to mirror direct execution.
@@ -106,7 +145,11 @@ confirm() {
   local prompt=$1
   local reply
   local prefix="${CONTAINER_LABEL:+[${CONTAINER_LABEL}] }"
-  read -r -p "${CONFIRM_MARK} ${prefix}${prompt} [y/N] " reply
+  if [[ -r /dev/tty ]]; then
+    read -r -p "${CONFIRM_MARK} ${prefix}${prompt} [y/N] " reply </dev/tty
+  else
+    read -r -p "${CONFIRM_MARK} ${prefix}${prompt} [y/N] " reply
+  fi
   [[ "${reply}" =~ ^[Yy]$ ]]
 }
 
@@ -158,8 +201,23 @@ get_wsl_host_ip() {
 check_portproxy() {
   local host_ip=$1
   local output regex
-  output=$(run_powershell "netsh interface portproxy show all" | tr -d '
-')
+  output=$(run_powershell "netsh interface portproxy show all" | tr -d '\r')
+
+  echo "$output" | awk 'NF>=4 && $2 ~ /^[0-9]+$/ {print $1, $2, $3, $4}' | while read -r listen_addr listen_port connect_addr connect_port; do
+    if [[ "$listen_port" == "$PORT" && "$listen_addr" != "$host_ip" ]]; then
+      if confirm "Remove portproxy ${listen_addr}:${listen_port} -> ${connect_addr}:${connect_port} (conflicts with ${host_ip}:${PORT})?"; then
+        if RUN_AS_ADMIN=1 run_powershell "netsh interface portproxy delete v4tov4 listenaddress=${listen_addr} listenport=${listen_port}"; then
+          ok "Removed conflicting portproxy ${listen_addr}:${listen_port}."
+        else
+          warn "Failed to remove conflicting portproxy ${listen_addr}:${listen_port}."
+        fi
+      else
+        warn "Keeping conflicting portproxy ${listen_addr}:${listen_port}."
+      fi
+    fi
+  done
+
+  output=$(run_powershell "netsh interface portproxy show all" | tr -d '\r')
   regex="${host_ip//./\.}[[:space:]]+${PORT}[[:space:]]+127\.0\.0\.1[[:space:]]+${PORT}"
   if echo "$output" | grep -Eq "$regex"; then
     ok "Portproxy ${host_ip}:${PORT} -> 127.0.0.1:${PORT} is configured."
@@ -388,12 +446,13 @@ ensure_wsl() {
 }
 
 main() {
-  local container="" uninstall_flag=0 stop_flag=0
+  local container="" uninstall_flag=0 stop_flag=0 debug_flag=0
   for arg in "$@"; do
     case "$arg" in
       --container=*) container=${arg#*=} ;;
       --uninstall) uninstall_flag=1 ;;
       --stop) stop_flag=1 ;;
+      --debug) debug_flag=1 ;;
     esac
   done
 
@@ -408,6 +467,11 @@ main() {
   fi
 
   if is_docker; then
+    if [[ $debug_flag -eq 1 ]]; then
+      debug_socat_info
+      exit 0
+    fi
+
     if [[ $uninstall_flag -eq 1 ]]; then
       uninstall_socat
       exit 0
@@ -430,6 +494,15 @@ main() {
   fi
 
   ensure_wsl
+
+  if [[ $debug_flag -eq 1 ]]; then
+    debug_windows_rules
+    debug_socat_info
+    if [[ -n "$container" ]]; then
+      container_exec "$container" --debug
+    fi
+    exit 0
+  fi
 
   if [[ $uninstall_flag -eq 1 ]]; then
     uninstall_portproxy
